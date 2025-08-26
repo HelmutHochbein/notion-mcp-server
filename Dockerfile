@@ -24,4 +24,4 @@ ENV NODE_ENV=production
 EXPOSE 3000
 
 # 6) Start: HTTP-Transport + korrekter Port + Auth + 0.0.0.0 Binding
-CMD ["node", "bin/cli.mjs", "--transport", "http", "--port", "${PORT}", "--auth-token", "${AUTH_TOKEN}", "--host", "0.0.0.0"]
+CMD node bin/cli.mjs --transport http --port $PORT --auth-token $AUTH_TOKEN --host 0.0.0.0
