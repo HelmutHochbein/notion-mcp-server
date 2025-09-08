@@ -2,26 +2,29 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# 1) Nur Package-Files für schnelle Layer
+# 1) Nur Package-Dateien zuerst kopieren (bessere Layer-Caches)
 COPY package*.json ./
 
-# 2) Voll installieren (inkl. Dev) -> wir bauen gleich
-#    (falls npm ci bei dir zickt, ersetze die Zeile durch: RUN npm install)
-RUN npm ci
+# 2) Install (robust, falls kein lockfile vorhanden)
+RUN npm install
 
-# 3) Restlichen Code kopieren
+# 3) Restlichen Code
 COPY . .
 
-# 4) Build ausführen (erzeugt u. a. bin/cli.mjs)
+# 4) Build (erzeugt u.a. bin/cli.mjs)
 RUN npm run build
 
-# 5) Dev-Dependencies entfernen -> kleineres Image
+# 5) Prod schlank machen
 RUN npm prune --omit=dev
 
 ENV NODE_ENV=production
 
 # Dokumentarisch
-EXPOSE 3000
+EXPOSE 8080
 
-# 6) Start: HTTP-Transport + korrekter Port + Auth + 0.0.0.0 Binding
-CMD node bin/cli.mjs --transport http --port $PORT --auth-token $AUTH_TOKEN --host 0.0.0.0
+# 6) Start: MCP-Server auf 8081; Proxy auf $PORT (Railway setzt $PORT)
+#    Ein Prozess startet den MCP-Server, danach der Proxy.
+CMD sh -c "\
+  node bin/cli.mjs --transport http --port 8081 --auth-token $AUTH_TOKEN --host 0.0.0.0 & \
+  node proxy.js \
+"
