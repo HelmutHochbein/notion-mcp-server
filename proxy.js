@@ -1,54 +1,57 @@
-// proxy.js
 import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
 
 const proxyPort = process.env.PORT || 8080;                 // öffentlicher Railway-Port
-const upstream  = "http://127.0.0.1:8081";                  // interner MCP (läuft via Dockerfile auf 8081)
-const proxyKey  = (process.env.PROXY_KEY || "").trim();     // externer Zugriffsschlüssel (?k=... oder Header)
-const authToken = (process.env.AUTH_TOKEN || "").trim();    // interner MCP-Auth-Token (Bearer ...)
+const upstream  = "http://127.0.0.1:8081";                  // interner MCP (läuft auf 8081)
+const proxyKey  = (process.env.PROXY_KEY || "").trim();     // externer Zugriffsschlüssel
+const authToken = (process.env.AUTH_TOKEN || "").trim();    // interner MCP-Auth-Token
 
 const app = express();
 
-// -------- Health --------
+// --- Health ---
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 
-// -------- Auth: akzeptiert ?k=... ODER Header X-Proxy-Key --------
-const authCheck = (req, res, next) => {
-  const ok = req.query.k === proxyKey || req.header("X-Proxy-Key") === proxyKey;
-  if (!ok) return res.status(401).json({ error: "unauthorized" });
-  next();
+// --- Auth-Helper: Key aus Query ODER Headern erlauben ---
+//  - ?k=<PROXY_KEY>
+//  - X-Proxy-Key: <PROXY_KEY>
+//  - Authorization: Bearer <PROXY_KEY>   (nur als Zugang für den PROXY!)
+const hasProxyKey = (req) => {
+  const q  = req.query?.k;
+  const xh = req.header("X-Proxy-Key");
+  const ah = req.header("authorization"); // kann auch klein geschrieben kommen
+  const aBearer = ah?.startsWith("Bearer ") ? ah.slice(7) : null;
+  return q === proxyKey || xh === proxyKey || aBearer === proxyKey;
 };
 
-// (temporär) Request-Log
-app.use((req, _res, next) => {
-  console.log(`[proxy] ${req.method} ${req.originalUrl}`);
-  next();
-});
+// --- Auth-Middleware ---
+//  - HEAD/OPTIONS IMMER erlauben (OpenAI preflight)
+//  - für alles andere muss der Proxy-Key vorliegen
+const authCheck = (req, res, next) => {
+  if (req.method === "HEAD" || req.method === "OPTIONS") return next();
+  if (hasProxyKey(req)) return next();
+  return res.status(401).json({ error: "unauthorized" });
+};
 
-// Gemeinsame Proxy-Optionen: Auth-Header setzen (zweifach)
+// --- Gemeinsame Proxy-Optionen: MCP-Auth injizieren ---
 const baseProxyOpts = {
   target: upstream,
   changeOrigin: true,
   logLevel: "debug",
+  // Header vorab setzen UND in onProxyReq absichern
   headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
   onProxyReq: (proxyReq, req) => {
-    // Fallback: Header nochmal setzen (falls headers:{} überschrieben würde)
     if (authToken) proxyReq.setHeader("Authorization", `Bearer ${authToken}`);
-    console.log(
-      `[proxy] → ${req.method} ${req.originalUrl} | injectAuth=${Boolean(
-        authToken
-      )} len=${authToken.length}`
-    );
+    console.log(`[proxy] → ${req.method} ${req.originalUrl} | injectAuth=${!!authToken} len=${authToken.length}`);
   },
 };
 
-// 1) NUR echte Root "/" → immer /mcp beim Upstream
+// Root "/" -> zwingend "/mcp"
 const proxyRootToMcp = createProxyMiddleware({
   ...baseProxyOpts,
   pathRewrite: () => "/mcp",
 });
 
-// 2) Alle anderen Pfade unverändert durchreichen (inkl. /mcp selbst)
+// Alle anderen Pfade unverändert (inkl. /mcp)
 const proxyPassthrough = createProxyMiddleware({
   ...baseProxyOpts,
 });
@@ -58,7 +61,5 @@ app.get("/", authCheck, proxyRootToMcp);     // echte Root
 app.use("/", authCheck, proxyPassthrough);   // alles andere
 
 app.listen(proxyPort, "0.0.0.0", () => {
-  console.log(
-    `[proxy] listening on ${proxyPort}, root "/" -> ${upstream}/mcp (PROXY_KEY set=${!!proxyKey}, AUTH_TOKEN len=${authToken.length})`
-  );
+  console.log(`[proxy] listening on ${proxyPort}, root "/" -> ${upstream}/mcp (preflight allowed)`);
 });
