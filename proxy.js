@@ -57,7 +57,7 @@ const proxyPassthrough = createProxyMiddleware({
 });
 
 // Reihenfolge ist wichtig:
-app.get("/", authCheck, proxyRootToMcp);     // echte Root
+app.all("/", authCheck, proxyRootToMcp);     // echte Root
 app.use("/", authCheck, proxyPassthrough);   // alles andere
 
 app.listen(proxyPort, "0.0.0.0", () => {
