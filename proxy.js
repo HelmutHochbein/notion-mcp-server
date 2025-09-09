@@ -1,45 +1,34 @@
-// proxy.js
 import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
 
-const proxyPort = process.env.PORT || 8080;                  // öffentlicher Railway-Port
-const upstream  = "http://127.0.0.1:8081";                   // MCP-Server intern
-const proxyKey  = process.env.PROXY_KEY;                     // externer Zugangsschlüssel
-const authToken = process.env.AUTH_TOKEN;                    // interner MCP-Auth-Token
-
-if (!proxyKey) {
-  console.error("[proxy] PROXY_KEY is not set");
-}
-if (!authToken) {
-  console.error("[proxy] AUTH_TOKEN is not set");
-}
+const proxyPort = process.env.PORT || 8080;
+const upstream  = "http://127.0.0.1:8081";
+const proxyKey  = process.env.PROXY_KEY;
+const authToken = process.env.AUTH_TOKEN;
 
 const app = express();
 
-// Health (optional)
+// Healthcheck
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 
-// Auth-Middleware: akzeptiere ?k=... ODER Header X-Proxy-Key
+// Auth check
 app.use((req, res, next) => {
   const keyFromQuery  = req.query.k;
   const keyFromHeader = req.header("X-Proxy-Key");
-  const ok = (keyFromQuery && keyFromQuery === proxyKey) || (keyFromHeader && keyFromHeader === proxyKey);
-  if (!ok) return res.status(401).json({ error: "unauthorized" });
-  return next();
+  if (keyFromQuery === proxyKey || keyFromHeader === proxyKey) {
+    return next();
+  }
+  return res.status(401).json({ error: "unauthorized" });
 });
 
-// Proxy: NUR Root "/" → "/mcp" rewriten, übrige Pfade durchreichen.
-// Zusätzlich den internen MCP-Header setzen.
+// Proxy root "/" nach "/mcp" umschreiben
 app.use(
   "/",
   createProxyMiddleware({
     target: upstream,
     changeOrigin: true,
-    pathRewrite: (path) => {
-      if (path === "/" || path === "") return "/mcp"; // nur Root auf /mcp
-      return path;                                    // sonst unverändert
-    },
-    logLevel: "warn",
+    pathRewrite: { "^/$": "/mcp" },   // Regex: NUR echte Root → /mcp
+    logLevel: "debug",
     onProxyReq: (proxyReq) => {
       if (authToken) {
         proxyReq.setHeader("Authorization", `Bearer ${authToken}`);
@@ -49,5 +38,5 @@ app.use(
 );
 
 app.listen(proxyPort, "0.0.0.0", () => {
-  console.log(`[proxy] listening on ${proxyPort}, forwarding to ${upstream} (root→/mcp), auth via PROXY_KEY`);
+  console.log(`[proxy] listening on ${proxyPort}, forwarding root "/" to ${upstream}/mcp`);
 });
