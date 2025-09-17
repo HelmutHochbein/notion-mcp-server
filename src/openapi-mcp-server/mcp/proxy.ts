@@ -23,6 +23,66 @@ type NewToolDefinition = {
   }>
 }
 
+/**
+ * Hilfsfunktion: entfernt „leere“ Werte aus Parametern, damit
+ * Notion-API keine validation_error (z. B. start_cursor="") wirft.
+ *
+ * Regeln:
+ *  - Entferne global: undefined, null, '' (leerer String)
+ *  - Entferne zusätzlich 0 / '0' für Cursor-ähnliche Keys:
+ *      start_cursor, next_cursor, cursor, startCursor, nextCursor, pageCursor
+ *  - Recurse in verschachtelten Objekten/Arrays
+ */
+function sanitizeParams<T = any>(input: T): T {
+  const isPlainObject = (v: any) =>
+    typeof v === 'object' && v !== null && !Array.isArray(v)
+
+  const shouldDrop = (key: string, val: any): boolean => {
+    // leer: undefined, null, ''
+    if (val === undefined || val === null) return true
+    if (typeof val === 'string' && val.trim() === '') return true
+
+    // Cursor-Keys: 0/'0' ebenfalls verwerfen
+    const cursorKey = /(start_?cursor|next_?cursor|page_?cursor|cursor)$/i
+    if (cursorKey.test(key)) {
+      if (val === 0 || val === '0') return true
+    }
+
+    return false
+  }
+
+  const sanitizeArray = (arr: any[]): any[] =>
+    arr
+      .map((v) =>
+        Array.isArray(v) ? sanitizeArray(v) : isPlainObject(v) ? sanitizeObject(v) : v
+      )
+      // leere Werte in Arrays i. d. R. behalten – außer es sind „hard empty“:
+      .filter((v) => !(v === undefined || v === null))
+
+  const sanitizeObject = (obj: Record<string, any>) => {
+    const out: Record<string, any> = {}
+    for (const [k, v] of Object.entries(obj)) {
+      if (shouldDrop(k, v)) continue
+      if (Array.isArray(v)) {
+        const cleaned = sanitizeArray(v)
+        if (cleaned.length > 0) out[k] = cleaned
+        continue
+      }
+      if (isPlainObject(v)) {
+        const cleaned = sanitizeObject(v)
+        if (Object.keys(cleaned).length > 0) out[k] = cleaned
+        continue
+      }
+      out[k] = v
+    }
+    return out
+  }
+
+  if (Array.isArray(input)) return sanitizeArray(input) as any
+  if (isPlainObject(input)) return sanitizeObject(input) as any
+  return input
+}
+
 // import this class, extend and return server
 export class MCPProxy {
   private server: Server
@@ -61,8 +121,8 @@ export class MCPProxy {
       // Add methods as separate tools to match the MCP format
       Object.entries(this.tools).forEach(([toolName, def]) => {
         def.methods.forEach(method => {
-          const toolNameWithMethod = `${toolName}-${method.name}`;
-          const truncatedToolName = this.truncateToolName(toolNameWithMethod);
+          const toolNameWithMethod = `${toolName}-${method.name}`
+          const truncatedToolName = this.truncateToolName(toolNameWithMethod)
           tools.push({
             name: truncatedToolName,
             description: method.description,
@@ -85,8 +145,11 @@ export class MCPProxy {
       }
 
       try {
+        // >>> Sanitize Input-Parameter (wichtig für Notion: start_cursor etc.)
+        const cleanedParams = sanitizeParams(params)
+
         // Execute the operation
-        const response = await this.httpClient.executeOperation(operation, params)
+        const response = await this.httpClient.executeOperation(operation, cleanedParams)
 
         // Convert response to MCP format
         return {
@@ -101,7 +164,7 @@ export class MCPProxy {
         console.error('Error in tool call', error)
         if (error instanceof HttpClientError) {
           console.error('HttpClientError encountered, returning structured error', error)
-          const data = error.data?.response?.data ?? error.data ?? {}
+          const data = (error as any).data?.response?.data ?? (error as any).data ?? {}
           return {
             content: [
               {
@@ -168,9 +231,9 @@ export class MCPProxy {
 
   private truncateToolName(name: string): string {
     if (name.length <= 64) {
-      return name;
+      return name
     }
-    return name.slice(0, 64);
+    return name.slice(0, 64)
   }
 
   async connect(transport: Transport) {
