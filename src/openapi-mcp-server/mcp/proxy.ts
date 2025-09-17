@@ -1,5 +1,5 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { CallToolRequestSchema, JSONRPCResponse, ListToolsRequestSchema, Tool } from '@modelcontextprotocol/sdk/types.js'
+import { CallToolRequestSchema, ListToolsRequestSchema, Tool } from '@modelcontextprotocol/sdk/types.js'
 import { JSONSchema7 as IJsonSchema } from 'json-schema'
 import { OpenAPIToMCPConverter } from '../openapi/parser'
 import { HttpClient, HttpClientError } from '../client/http-client'
@@ -24,42 +24,30 @@ type NewToolDefinition = {
 }
 
 /**
- * Hilfsfunktion: entfernt „leere“ Werte aus Parametern, damit
- * Notion-API keine validation_error (z. B. start_cursor="") wirft.
- *
- * Regeln:
- *  - Entferne global: undefined, null, '' (leerer String)
- *  - Entferne zusätzlich 0 / '0' für Cursor-ähnliche Keys:
- *      start_cursor, next_cursor, cursor, startCursor, nextCursor, pageCursor
- *  - Recurse in verschachtelten Objekten/Arrays
+ * Entfernt „leere“ Werte aus Params, damit Notion-API keinen validation_error wirft
+ * (z. B. start_cursor="" oder 0). Arbeitet rein mit `any`, damit TS strikt bleibt.
  */
-function sanitizeParams<T = any>(input: T): T {
-  const isPlainObject = (v: any) =>
+function sanitizeParams(input: any): any {
+  const isPlainObject = (v: any): v is Record<string, any> =>
     typeof v === 'object' && v !== null && !Array.isArray(v)
 
+  const cursorKeyRegex = /(start_?cursor|next_?cursor|page_?cursor|cursor)$/i
+
   const shouldDrop = (key: string, val: any): boolean => {
-    // leer: undefined, null, ''
     if (val === undefined || val === null) return true
     if (typeof val === 'string' && val.trim() === '') return true
-
-    // Cursor-Keys: 0/'0' ebenfalls verwerfen
-    const cursorKey = /(start_?cursor|next_?cursor|page_?cursor|cursor)$/i
-    if (cursorKey.test(key)) {
+    if (cursorKeyRegex.test(key)) {
       if (val === 0 || val === '0') return true
     }
-
     return false
   }
 
   const sanitizeArray = (arr: any[]): any[] =>
     arr
-      .map((v) =>
-        Array.isArray(v) ? sanitizeArray(v) : isPlainObject(v) ? sanitizeObject(v) : v
-      )
-      // leere Werte in Arrays i. d. R. behalten – außer es sind „hard empty“:
+      .map((v) => (Array.isArray(v) ? sanitizeArray(v) : isPlainObject(v) ? sanitizeObject(v) : v))
       .filter((v) => !(v === undefined || v === null))
 
-  const sanitizeObject = (obj: Record<string, any>) => {
+  const sanitizeObject = (obj: Record<string, any>): Record<string, any> => {
     const out: Record<string, any> = {}
     for (const [k, v] of Object.entries(obj)) {
       if (shouldDrop(k, v)) continue
@@ -78,8 +66,8 @@ function sanitizeParams<T = any>(input: T): T {
     return out
   }
 
-  if (Array.isArray(input)) return sanitizeArray(input) as any
-  if (isPlainObject(input)) return sanitizeObject(input) as any
+  if (Array.isArray(input)) return sanitizeArray(input)
+  if (isPlainObject(input)) return sanitizeObject(input as Record<string, any>)
   return input
 }
 
@@ -145,8 +133,8 @@ export class MCPProxy {
       }
 
       try {
-        // >>> Sanitize Input-Parameter (wichtig für Notion: start_cursor etc.)
-        const cleanedParams = sanitizeParams(params)
+        // WICHTIG: Parameter vor der Anfrage bereinigen (leere/unerlaubte Query-Keys)
+        const cleanedParams = sanitizeParams(params as any)
 
         // Execute the operation
         const response = await this.httpClient.executeOperation(operation, cleanedParams)
@@ -155,8 +143,8 @@ export class MCPProxy {
         return {
           content: [
             {
-              type: 'text', // currently this is the only type that seems to be used by mcp server
-              text: JSON.stringify(response.data), // TODO: pass through the http status code text?
+              type: 'text',
+              text: JSON.stringify(response.data),
             },
           ],
         }
@@ -170,7 +158,7 @@ export class MCPProxy {
               {
                 type: 'text',
                 text: JSON.stringify({
-                  status: 'error', // TODO: get this from http status code?
+                  status: 'error',
                   ...(typeof data === 'object' ? data : { data: data }),
                 }),
               },
@@ -196,7 +184,7 @@ export class MCPProxy {
           console.warn('OPENAPI_MCP_HEADERS environment variable must be a JSON object, got:', typeof headers)
         } else if (Object.keys(headers).length > 0) {
           // Only use OPENAPI_MCP_HEADERS if it contains actual headers
-          return headers
+          return headers as Record<string, string>
         }
         // If OPENAPI_MCP_HEADERS is empty object, fall through to try NOTION_TOKEN
       } catch (error) {
@@ -237,7 +225,6 @@ export class MCPProxy {
   }
 
   async connect(transport: Transport) {
-    // The SDK will handle stdio communication
     await this.server.connect(transport)
   }
 
